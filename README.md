@@ -42,6 +42,38 @@ A cross-platform image enhancement application built with QtPy for maximum compa
    pip install -r requirements.txt
    ```
 
+## Windows Setup
+
+Follow these steps on Windows using PowerShell or Command Prompt.
+
+1. Install Python 3.8+ from https://www.python.org and select "Add Python to PATH" during installation.
+2. Open Windows PowerShell (recommended) or Command Prompt.
+3. Create and activate a virtual environment, install dependencies, and run:
+
+PowerShell:
+```powershell
+python -m venv venv
+./venv/Scripts/Activate.ps1
+pip install -r requirements.txt
+python main.py
+```
+
+Command Prompt (CMD):
+```bat
+python -m venv venv
+venv\Scripts\activate.bat
+pip install -r requirements.txt
+python main.py
+```
+
+Notes:
+- If activation fails with an execution policy error, run:
+  ```powershell
+  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+  ```
+- If `pip` isn't recognized, use `python -m pip install -r requirements.txt`.
+- Qt backend is provided by PySide6 (already included in requirements).
+
 ## Running the Application
 
 ```bash

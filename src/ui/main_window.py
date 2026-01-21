@@ -6,10 +6,11 @@ import os
 from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QFileDialog, QMessageBox,
-    QSlider, QGroupBox, QGridLayout, QStatusBar
+    QSlider, QGroupBox, QGridLayout, QStatusBar,
+    QFrame, QScrollArea, QTextEdit
 )
 from qtpy.QtCore import Qt, Signal
-from qtpy.QtGui import QPixmap, QIcon
+from qtpy.QtGui import QPixmap, QIcon, QPalette, QColor
 from src.core.image_processor import ImageProcessor
 
 
@@ -22,6 +23,7 @@ class MainWindow(QMainWindow):
         self.current_image_path = None
         self.original_pixmap = None
         self.truly_original_pixmap = None  # Store the unmodified original image
+        self.current_analysis = None  # Store current image analysis
         
         self.init_ui()
         self.connect_signals()
@@ -217,8 +219,12 @@ class MainWindow(QMainWindow):
         image_widget = QWidget()
         image_layout = QVBoxLayout(image_widget)
         
+        # Create a container for the image and overlay
+        self.image_container = QWidget()
+        self.image_container.setMinimumSize(600, 500)
+        
         # Image display label
-        self.image_label = QLabel()
+        self.image_label = QLabel(self.image_container)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet("""
             QLabel {
@@ -230,10 +236,145 @@ class MainWindow(QMainWindow):
             }
         """)
         self.image_label.setText("Click 'Load Image' to start")
-        self.image_label.setMinimumSize(600, 500)
+        self.image_label.setGeometry(0, 0, 600, 500)
         
-        image_layout.addWidget(self.image_label)
+        # Create analysis overlay
+        self.create_analysis_overlay()
+        
+        image_layout.addWidget(self.image_container)
         parent_layout.addWidget(image_widget)
+    
+    def create_analysis_overlay(self):
+        """Create transparent overlay for image analysis display."""
+        # Analysis overlay frame
+        self.analysis_overlay = QFrame(self.image_container)
+        self.analysis_overlay.setFixedSize(320, 300)
+        self.analysis_overlay.setStyleSheet("""
+            QFrame {
+                background-color: rgba(0, 0, 0, 180);
+                border: 1px solid rgba(255, 255, 255, 100);
+                border-radius: 8px;
+            }
+        """)
+        self.analysis_overlay.hide()  # Initially hidden
+        
+        # Analysis text display
+        overlay_layout = QVBoxLayout(self.analysis_overlay)
+        overlay_layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Title
+        title_label = QLabel("Image Analysis")
+        title_label.setStyleSheet("""
+            QLabel {
+                color: white;
+                font-size: 14px;
+                font-weight: bold;
+                margin-bottom: 5px;
+            }
+        """)
+        overlay_layout.addWidget(title_label)
+        
+        # Scrollable analysis text
+        self.analysis_text = QTextEdit()
+        self.analysis_text.setReadOnly(True)
+        self.analysis_text.setStyleSheet("""
+            QTextEdit {
+                background-color: transparent;
+                border: none;
+                color: white;
+                font-size: 11px;
+                font-family: 'Consolas', 'Monaco', monospace;
+            }
+            QScrollBar:vertical {
+                background-color: rgba(255, 255, 255, 30);
+                width: 12px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: rgba(255, 255, 255, 100);
+                border-radius: 6px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: rgba(255, 255, 255, 150);
+            }
+        """)
+        overlay_layout.addWidget(self.analysis_text)
+        
+    def update_analysis_display(self, analysis):
+        """Update the analysis overlay with new analysis data."""
+        if not analysis:
+            self.analysis_overlay.hide()
+            return
+            
+        # Format analysis data
+        text_parts = []
+        
+        # Quality score
+        score = analysis.get('overall_quality_score', 0.0)
+        quality_status = "GOOD" if score >= 0.7 else "POOR" if score < 0.4 else "FAIR"
+        text_parts.append(f"🎯 Quality: {quality_status} ({score:.2f})")
+        
+        # Image info
+        info = analysis.get('image_info', {})
+        dims = info.get('dimensions', (0, 0))
+        text_parts.append(f"📐 Size: {dims[0]}x{dims[1]}")
+        
+        # Lighting analysis
+        lighting = analysis.get('lighting', {})
+        brightness = lighting.get('mean_brightness', 0)
+        contrast = lighting.get('contrast', 0)
+        text_parts.append(f"💡 Brightness: {brightness:.1f}")
+        text_parts.append(f"🔳 Contrast: {contrast:.1f}")
+        
+        # Issues detection
+        issues = []
+        if analysis.get('noise', {}).get('is_noisy'):
+            noise_level = analysis['noise'].get('noise_level', 'unknown')
+            issues.append(f"Noise ({noise_level})")
+        if analysis.get('blur', {}).get('is_blurry'):
+            blur_severity = analysis['blur'].get('severity', 'unknown')
+            issues.append(f"Blur ({blur_severity})")
+        if analysis.get('backlight', {}).get('has_backlight'):
+            backlight_severity = analysis['backlight'].get('severity', 'unknown')
+            issues.append(f"Backlight ({backlight_severity})")
+        if analysis.get('lighting', {}).get('is_low_light'):
+            issues.append("Low light")
+        if analysis.get('lighting', {}).get('is_low_contrast'):
+            issues.append("Low contrast")
+            
+        if issues:
+            text_parts.append("\n⚠️ Issues:")
+            for issue in issues:
+                text_parts.append(f"  • {issue}")
+        else:
+            text_parts.append("\n✅ No major issues")
+            
+        # Recommendations
+        recommendations = analysis.get('recommendations', [])
+        if recommendations:
+            text_parts.append("\n💡 Recommendations:")
+            for rec in recommendations[:3]:  # Limit to top 3
+                text_parts.append(f"  • {rec}")
+                
+        # Technical details
+        text_parts.append("\n🔧 Technical:")
+        if 'noise' in analysis:
+            psnr = analysis['noise'].get('psnr', 0)
+            laplacian = analysis['noise'].get('laplacian_variance', 0)
+            text_parts.append(f"  PSNR: {psnr:.1f}dB")
+            text_parts.append(f"  Sharpness: {laplacian:.1f}")
+        
+        self.analysis_text.setPlainText('\n'.join(text_parts))
+        self.analysis_overlay.show()
+    
+    def position_analysis_overlay(self):
+        """Position the analysis overlay in the bottom-right of the image container."""
+        if hasattr(self, 'analysis_overlay'):
+            container_rect = self.image_container.geometry()
+            overlay_x = container_rect.width() - self.analysis_overlay.width() - 10
+            overlay_y = container_rect.height() - self.analysis_overlay.height() - 10
+            self.analysis_overlay.move(max(10, overlay_x), max(10, overlay_y))
     
     def connect_signals(self):
         """Connect UI signals to their handlers."""
@@ -296,6 +437,9 @@ class MainWindow(QMainWindow):
                 # Reset sliders
                 self.reset_adjustments()
                 
+                # Auto-analyze the image
+                self.analyze_current_image()
+                
                 self.status_bar.showMessage(f"Loaded: {os.path.basename(file_path)}")
                 
             except Exception as e:
@@ -334,6 +478,8 @@ class MainWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation
             )
             self.image_label.setPixmap(scaled_pixmap)
+            # Position the analysis overlay
+            self.position_analysis_overlay()
     
     def reset_adjustments(self):
         """Reset all adjustment sliders and restore original image (remove all filters)."""
@@ -546,6 +692,27 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to apply histogram equalization:\n{str(e)}")
     
+    def analyze_current_image(self):
+        """Analyze the currently loaded image and update the display."""
+        if not self.original_pixmap:
+            return
+            
+        try:
+            # Analyze the image using ImageProcessor
+            analysis = self.image_processor.analyze_image(self.original_pixmap)
+            self.current_analysis = analysis
+            
+            # Update the analysis display
+            self.update_analysis_display(analysis)
+            
+            if analysis:
+                score = analysis.get('overall_quality_score', 0.0)
+                self.status_bar.showMessage(f"Analysis complete - Quality score: {score:.2f}")
+            
+        except Exception as e:
+            print(f"Error analyzing image: {e}")
+            self.status_bar.showMessage("Analysis failed")
+    
     def resizeEvent(self, event):
         """Handle window resize to update image display."""
         super().resizeEvent(event)
@@ -553,3 +720,6 @@ class MainWindow(QMainWindow):
             # Re-display current image with new size
             current_pixmap = self.original_pixmap if self.original_pixmap else self.image_label.pixmap()
             self.display_image(current_pixmap)
+        # Reposition overlay after resize
+        if hasattr(self, 'analysis_overlay'):
+            self.position_analysis_overlay()
