@@ -368,8 +368,34 @@ class ImageProcessor:
     def __init__(self):
         self.use_opencv = True  # Flag to switch between OpenCV and PIL
         self.original_image = None  # Store original OpenCV image
-        self.analyzer = ImageAnalyzer()  # Image quality analyzer
+        self.analyzer = ImageAnalyzer()  # Initialize image analyzer
     
+    def analyze_image(self, pixmap):
+        """
+        Analyze a QPixmap using ImageAnalyzer.
+        
+        Args:
+            pixmap (QPixmap): Image pixmap to analyze
+            
+        Returns:
+            Dict: Analysis results from ImageAnalyzer
+        """
+        if not pixmap:
+            return None
+            
+        try:
+            # Convert QPixmap to OpenCV image
+            cv_image = self.qpixmap_to_cv2(pixmap)
+            
+            # Use ImageAnalyzer to detect all issues
+            analysis = self.analyzer.detect_all_issues(cv_image)
+            
+            return analysis
+            
+        except Exception as e:
+            print(f"Error analyzing image: {e}")
+            return None
+
     def enhance_image(self, pixmap, brightness=0, contrast=0, saturation=0):
         """
         Enhance image with brightness, contrast, and saturation adjustments using OpenCV.
@@ -605,6 +631,34 @@ class ImageProcessor:
             
         except Exception as e:
             print(f"Error applying Gaussian blur: {e}")
+            return pixmap
+    
+    def apply_bilateral_filter(self, pixmap, d=9, sigma_color=75, sigma_space=75):
+        """
+        Apply bilateral filter to reduce noise while keeping edges sharp.
+        
+        Args:
+            pixmap (QPixmap): Input image pixmap
+            d (int): Diameter of each pixel neighborhood (5-15 recommended)
+            sigma_color (float): Filter sigma in the color space (10-150)
+            sigma_space (float): Filter sigma in the coordinate space (10-150)
+            
+        Returns:
+            QPixmap: Bilateral filtered image
+        """
+        try:
+            cv_image = self.qpixmap_to_cv2(pixmap)
+            
+            # Apply bilateral filter
+            # d: Diameter of each pixel neighborhood. If negative, computed from sigma_space
+            # sigma_color: Filter sigma in the color space. Larger value means farther colors mix more
+            # sigma_space: Filter sigma in the coordinate space. Larger value means farther pixels mix more
+            cv_image = cv2.bilateralFilter(cv_image, d, sigma_color, sigma_space)
+            
+            return self.cv2_to_qpixmap(cv_image)
+            
+        except Exception as e:
+            print(f"Error applying bilateral filter: {e}")
             return pixmap
     
     def apply_filter(self, pixmap, filter_type):

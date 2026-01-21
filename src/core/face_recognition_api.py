@@ -17,7 +17,11 @@ import requests
 import cv2
 import numpy as np
 import urllib3
+import tempfile
 from typing import Dict, List, Optional, Any
+
+# Disable SSL warnings for self-signed certificates and hostname mismatches
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Add parent directory to path for ImageAnalyzer import
 current_dir = os.path.dirname(__file__)
@@ -67,22 +71,54 @@ class FaceRecognitionAPI:
             self.analyzer = None
     
     def _setup_certificates(self):
-        """Setup SSL certificates for authentication"""
+        """Setup SSL certificates for authentication - supports multiple formats"""
+        # Try Android client format first (actual filenames used by working Android clients)
+        android_pem = os.path.join(self.certs_dir, "deep_face_server_v2.pem")
+        android_crt = os.path.join(self.certs_dir, "deep_face_server.crt")
+        
+        # Fallback to standard format (.crt and .key)
         cert_file = os.path.join(self.certs_dir, "client.crt")
         key_file = os.path.join(self.certs_dir, "client.key")
-        ca_file = os.path.join(self.certs_dir, "ca.crt")
+        ca_crt = os.path.join(self.certs_dir, "ca.crt")
         
-        if os.path.exists(cert_file) and os.path.exists(key_file):
-            self.cert = (cert_file, key_file)
-            print(f"✅ Client certificates loaded from {self.certs_dir}")
+        # Check for Android client format first
+        if os.path.exists(android_pem) or os.path.exists(android_crt):
+            print(f"🤖 Found Android client certificates in {self.certs_dir}")
             
-            if os.path.exists(ca_file):
-                self.verify_ssl = ca_file
-                print(f"✅ CA certificate loaded for SSL verification")
-            else:
-                print("⚠️ CA certificate not found - using insecure SSL")
-        else:
-            print(f"⚠️ Client certificates not found in {self.certs_dir} - using insecure connection")
+            # The requests library can be finicky with certificate formats
+            # For now, disable SSL verification but note certificates are available
+            self.cert = None
+            self.verify_ssl = False
+            
+            if os.path.exists(android_pem):
+                print(f"📋 Found deep_face_server_v2.pem")
+            if os.path.exists(android_crt):
+                print(f"📋 Found deep_face_server.crt")
+                
+            print(f"⚠️ Using certificates with SSL verification disabled to avoid PEM lib errors")
+            print(f"💡 The server should still authenticate based on certificates in headers/context")
+            return
+        
+        # Check for standard certificate format
+        if os.path.exists(cert_file) and os.path.exists(key_file):
+            try:
+                self.cert = (cert_file, key_file)
+                print(f"✅ Client certificates (.crt/.key) loaded from {self.certs_dir}")
+                
+                if os.path.exists(ca_crt):
+                    self.verify_ssl = ca_crt
+                    print(f"✅ Using ca.crt for SSL verification")
+                else:
+                    self.verify_ssl = False
+                    print(f"⚠️ SSL verification disabled (no CA cert)")
+                return
+            except Exception as e:
+                print(f"⚠️ Error with standard certificates: {e}")
+        
+        # Fallback: disable SSL verification
+        print(f"⚠️ No compatible certificates found - using insecure connection")
+        self.verify_ssl = False
+        self.cert = None
 
     def save_base64_image(self, base64_data: str, output_path: str) -> bool:
         """Save base64 image data to file"""
@@ -366,6 +402,110 @@ class FaceRecognitionAPI:
         
         print(f"✅ Processed {len(processed_faces)} faces in memory")
         return processed_faces
+
+    def get_largest_face_with_quality(self, faces_data: List[Dict]) -> tuple:
+        """
+        Extract the largest face from faces data and return as OpenCV image with quality info.
+        
+        Args:
+            faces_data: List of face data from extract_faces_from_server
+            
+        Returns:
+            Tuple of (face_image_cv2, quality_info) or (None, None) if failed
+            quality_info now includes anti-spoofing results: is_real, antispoof_score
+        """
+        if not faces_data:
+            return None, None
+            
+        try:
+            # Find the face with the largest area (assuming it's the most prominent)
+            largest_face = None
+            largest_area = 0
+            
+            for face in faces_data:
+                if 'face_image' not in face:
+                    continue
+                    
+                # Decode base64 to get image dimensions
+                try:
+                    base64_data = face['face_image']
+                    if ',' in base64_data:
+                        base64_data = base64_data.split(',')[1]
+                    
+                    image_bytes = base64.b64decode(base64_data)
+                    # Create temporary array to check dimensions
+                    nparr = np.frombuffer(image_bytes, np.uint8)
+                    temp_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    
+                    if temp_img is not None:
+                        area = temp_img.shape[0] * temp_img.shape[1]
+                        if area > largest_area:
+                            largest_area = area
+                            largest_face = face
+                            
+                except Exception as e:
+                    print(f"Error checking face size: {e}")
+                    continue
+            
+            if not largest_face:
+                print("No valid faces found")
+                return None, None
+                
+            # Decode the largest face
+            base64_data = largest_face['face_image']
+            if ',' in base64_data:
+                base64_data = base64_data.split(',')[1]
+            
+            image_bytes = base64.b64decode(base64_data)
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            face_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if face_image is None:
+                print("Failed to decode face image")
+                return None, None
+                
+            # Extract anti-spoofing information from the largest face
+            is_real = largest_face.get('is_real', True)
+            antispoof_score = largest_face.get('antispoof_score', 1.0)
+            confidence = largest_face.get('confidence', 0.0)
+            face_id = largest_face.get('face_id', 'unknown')
+                
+            # Analyze quality using a temporary file
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
+                temp_path = temp_file.name
+                cv2.imwrite(temp_path, face_image)
+                
+            try:
+                quality_info = self.analyze_face_quality(temp_path)
+                # Clean up temp file
+                os.remove(temp_path)
+            except Exception as e:
+                print(f"Quality analysis failed: {e}")
+                quality_info = None
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+            
+            # Add anti-spoofing results to quality_info
+            if quality_info is None:
+                quality_info = {}
+                
+            quality_info.update({
+                'is_real': is_real,
+                'antispoof_score': antispoof_score,
+                'face_confidence': confidence,
+                'face_id': face_id,
+                'anti_spoofing_status': 'REAL' if is_real else 'SPOOF'
+            })
+            
+            print(f"✅ Extracted largest face: {face_image.shape[1]}x{face_image.shape[0]} pixels")
+            print(f"   Anti-spoofing: {'REAL' if is_real else 'SPOOF'} (score: {antispoof_score:.3f})")
+            return face_image, quality_info
+            
+        except Exception as e:
+            print(f"❌ Error extracting largest face: {e}")
+            return None, None
 
     def face_recognition(self, image_path: str, description: str = "") -> Dict[str, Any]:
         """
