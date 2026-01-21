@@ -9,8 +9,8 @@ from qtpy.QtWidgets import (
     QSlider, QGroupBox, QGridLayout, QStatusBar,
     QFrame, QScrollArea, QTextEdit
 )
-from qtpy.QtCore import Qt, Signal, QSettings
-from qtpy.QtGui import QPixmap, QIcon, QPalette, QColor, QImage
+from qtpy.QtCore import Qt, Signal, QSettings, QUrl
+from qtpy.QtGui import QPixmap, QIcon, QPalette, QColor, QImage, QDragEnterEvent, QDropEvent
 from src.core.image_processor import ImageProcessor
 from src.core.face_recognition_api import FaceRecognitionAPI
 import cv2
@@ -50,6 +50,9 @@ class MainWindow(QMainWindow):
         """Initialize the user interface."""
         self.setWindowTitle("Qt Image Enhancer")
         self.setGeometry(100, 100, 1000, 700)
+        
+        # Enable drag and drop
+        self.setAcceptDrops(True)
         
         # Create central widget and main layout
         central_widget = QWidget()
@@ -339,7 +342,7 @@ class MainWindow(QMainWindow):
                 font-size: 16px;
             }
         """)
-        self.image_label.setText("Click 'Load Image' to start")
+        self.image_label.setText("Click 'Load Image' or drag and drop an image file here")
         self.image_label.setGeometry(0, 0, 600, 500)
         
         # Create analysis overlay
@@ -497,6 +500,28 @@ class MainWindow(QMainWindow):
         """)
         recognition_layout.addWidget(self.recognize_face_btn)
         
+        # Save face button
+        self.save_face_btn = QPushButton("Save Face")
+        self.save_face_btn.setEnabled(False)
+        self.save_face_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                padding: 8px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        recognition_layout.addWidget(self.save_face_btn)
+        
         # Recognition result display
         result_group = QGroupBox("Recognition Result")
         result_layout = QVBoxLayout(result_group)
@@ -643,6 +668,7 @@ class MainWindow(QMainWindow):
         # Connect face recognition buttons
         self.extract_face_btn.clicked.connect(self.extract_face)
         self.recognize_face_btn.clicked.connect(self.recognize_face)
+        self.save_face_btn.clicked.connect(self.save_face)
         
         # Connect analyze button
         self.analyze_btn.clicked.connect(self.analyze_current_image)
@@ -867,6 +893,10 @@ class MainWindow(QMainWindow):
                 if hasattr(self, 'recognize_face_btn'):
                     self.recognize_face_btn.setEnabled(False)
                 
+                # Disable save face button since face is cleared
+                if hasattr(self, 'save_face_btn'):
+                    self.save_face_btn.setEnabled(False)
+                
                 # Re-analyze the fresh image
                 self.analyze_current_image()
                 
@@ -923,6 +953,10 @@ class MainWindow(QMainWindow):
                 # Disable face recognition button
                 if hasattr(self, 'recognize_face_btn'):
                     self.recognize_face_btn.setEnabled(False)
+                
+                # Disable save face button
+                if hasattr(self, 'save_face_btn'):
+                    self.save_face_btn.setEnabled(False)
                     
                 # Show message to user
                 QMessageBox.information(self, "No Faces Detected", 
@@ -954,6 +988,10 @@ class MainWindow(QMainWindow):
                 # Enable face recognition button
                 if hasattr(self, 'recognize_face_btn'):
                     self.recognize_face_btn.setEnabled(True)
+                
+                # Enable save face button
+                if hasattr(self, 'save_face_btn'):
+                    self.save_face_btn.setEnabled(True)
                 
                 # Show quality info in status
                 if quality_info:
@@ -1493,8 +1531,9 @@ class MainWindow(QMainWindow):
                 self.display_face_image(self.extracted_face_pixmap)
                 self.update_face_quality_display(quality_info)
                 
-                # Enable recognition button
+                # Enable recognition and save buttons
                 self.recognize_face_btn.setEnabled(True)
+                self.save_face_btn.setEnabled(True)
                 
                 self.status_bar.showMessage(f"Face extracted successfully")
             else:
@@ -1602,26 +1641,166 @@ class MainWindow(QMainWindow):
             
         text_parts = []
         
-        if result.get('success'):
-            person_name = result.get('person_name', 'Unknown')
-            confidence = result.get('confidence', 0)
-            distance = result.get('distance', 0)
-            processing_time = result.get('processing_time_ms', 0)
-            
-            text_parts.append(f"✅ RECOGNIZED")
-            text_parts.append(f"Person: {person_name}")
-            text_parts.append(f"Confidence: {confidence:.3f}")
-            text_parts.append(f"Distance: {distance:.3f}")
-            text_parts.append(f"Time: {processing_time}ms")
+        # Format recognition result based on structure
+        if isinstance(result, dict):
+            if 'matches' in result:
+                matches = result.get('matches', [])
+                if matches:
+                    text_parts.append(f"Found {len(matches)} match(es):")
+                    for i, match in enumerate(matches[:3]):  # Show top 3 matches
+                        confidence = match.get('confidence', 0.0)
+                        identity = match.get('identity', 'Unknown')
+                        text_parts.append(f"  {i+1}. {identity} ({confidence:.2f})")
+                else:
+                    text_parts.append("No matches found")
+            else:
+                # Simple result format
+                for key, value in result.items():
+                    text_parts.append(f"{key}: {value}")
         else:
-            error = result.get('error', '')
-            message = result.get('message', 'Recognition failed')
-            processing_time = result.get('processing_time_ms', 0)
+            text_parts.append(str(result))
             
-            text_parts.append(f"❌ NOT RECOGNIZED")
-            text_parts.append(f"Message: {message}")
-            if error:
-                text_parts.append(f"Error: {error}")
-            text_parts.append(f"Time: {processing_time}ms")
+        if not text_parts:
+            text_parts.append("Recognition completed successfully")
             
         self.recognition_result_text.setPlainText('\n'.join(text_parts))
+    
+    def save_face(self):
+        """Save the extracted face image to a file."""
+        if not self.extracted_face_pixmap:
+            QMessageBox.warning(self, "Warning", "No face has been extracted yet")
+            return
+            
+        try:
+            # Open file dialog to choose save location
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Extracted Face",
+                f"extracted_face_{os.path.splitext(os.path.basename(self.current_image_path or 'image'))[0]}.png",
+                "PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*)"
+            )
+            
+            if file_path:
+                # Save the extracted face image
+                success = self.extracted_face_pixmap.save(file_path)
+                
+                if success:
+                    QMessageBox.information(
+                        self, 
+                        "Success", 
+                        f"Face image saved successfully to:\n{file_path}"
+                    )
+                    self.status_bar.showMessage(f"Face saved to {os.path.basename(file_path)}")
+                else:
+                    QMessageBox.critical(
+                        self, 
+                        "Error", 
+                        "Failed to save the face image. Please check the file path and permissions."
+                    )
+                    self.status_bar.showMessage("Face save failed")
+                    
+        except Exception as e:
+            QMessageBox.critical(
+                self, 
+                "Error", 
+                f"An error occurred while saving the face image:\n{str(e)}"
+            )
+            self.status_bar.showMessage("Face save error")
+    
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Handle drag enter event."""
+        if event.mimeData().hasUrls():
+            # Check if any of the dragged files is an image
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    if self.is_image_file(file_path):
+                        event.acceptProposedAction()
+                        return
+        event.ignore()
+    
+    def dragMoveEvent(self, event):
+        """Handle drag move event."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+    
+    def dropEvent(self, event: QDropEvent):
+        """Handle drop event."""
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    if self.is_image_file(file_path):
+                        self.load_image_from_path(file_path)
+                        event.acceptProposedAction()
+                        return
+        event.ignore()
+    
+    def is_image_file(self, file_path):
+        """Check if the file is a supported image format."""
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif', '.webp'}
+        return os.path.splitext(file_path.lower())[1] in image_extensions
+    
+    def load_image_from_path(self, file_path):
+        """Load image from the given file path."""
+        try:
+            if not os.path.exists(file_path):
+                QMessageBox.warning(self, "File Not Found", f"File not found: {file_path}")
+                return
+            
+            # Store the current image path
+            self.current_image_path = file_path
+            
+            # Load and display the image
+            self.truly_original_pixmap = QPixmap(file_path)
+            self.original_pixmap = self.truly_original_pixmap.copy()
+            
+            if self.original_pixmap.isNull():
+                QMessageBox.critical(self, "Error", "Failed to load the image. Please check if it's a valid image file.")
+                return
+            
+            # Clear any existing extracted face data
+            self.extracted_face_pixmap = None
+            self.original_extracted_face_pixmap = None
+            self.extracted_face_quality = None
+            self.recognition_result = None
+            
+            # Display the image
+            self.display_image(self.original_pixmap)
+            
+            # Enable controls
+            self.save_btn.setEnabled(True)
+            self.reset_btn.setEnabled(True)
+            self.brightness_slider.setEnabled(True)
+            self.contrast_slider.setEnabled(True)
+            self.saturation_slider.setEnabled(True)
+            self.grayscale_btn.setEnabled(True)
+            self.apply_blur_btn.setEnabled(True)
+            self.apply_bilateral_btn.setEnabled(True)
+            self.apply_denoise_btn.setEnabled(True)
+            self.sharpen_btn.setEnabled(True)
+            self.edge_btn.setEnabled(True)
+            self.emboss_btn.setEnabled(True)
+            self.histogram_btn.setEnabled(True)
+            
+            # Enable face extraction
+            self.extract_face_btn.setEnabled(True)
+            
+            # Enable analyze button
+            self.analyze_btn.setEnabled(True)
+            
+            # Reset sliders to config values
+            self.reset_adjustments()
+            
+            # Auto-analyze the image
+            self.analyze_current_image()
+            
+            # Auto-extract face with anti-spoofing
+            self.auto_extract_face()
+            
+            self.status_bar.showMessage(f"Loaded: {os.path.basename(file_path)}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load image:\n{str(e)}")
