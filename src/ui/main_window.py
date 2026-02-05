@@ -13,6 +13,7 @@ from qtpy.QtCore import Qt, Signal, QSettings, QUrl
 from qtpy.QtGui import QPixmap, QIcon, QPalette, QColor, QImage, QDragEnterEvent, QDropEvent
 from src.core.image_processor import ImageProcessor
 from src.core.face_recognition_api import FaceRecognitionAPI
+from src.ui.process_window import ProcessWindow
 import cv2
 import numpy as np
 import tempfile
@@ -37,6 +38,7 @@ class MainWindow(QMainWindow):
         self.original_extracted_face_pixmap = None  # Store original unenhanced extracted face
         self.extracted_face_quality = None  # Store face quality info
         self.recognition_result = None  # Store recognition result
+        self.process_window = None  # Process window instance
         
         # Initialize config
         self.config_file = Path("config.ini")
@@ -87,8 +89,13 @@ class MainWindow(QMainWindow):
         self.save_btn = QPushButton("Save Image")
         self.save_btn.setEnabled(False)
         
+        # Process window button
+        self.process_btn = QPushButton("Open Process Window")
+        self.process_btn.setToolTip("Open batch processing window")
+        
         file_layout.addWidget(self.load_btn)
         file_layout.addWidget(self.save_btn)
+        file_layout.addWidget(self.process_btn)
         
         # Enhancement controls group
         enhance_group = QGroupBox("Image Enhancement")
@@ -701,6 +708,7 @@ class MainWindow(QMainWindow):
         """Connect UI signals to their handlers."""
         self.load_btn.clicked.connect(self.load_image)
         self.save_btn.clicked.connect(self.save_image)
+        self.process_btn.clicked.connect(self.open_process_window)
         self.reset_btn.clicked.connect(self.reset_adjustments)
         
         # Connect sliders
@@ -895,6 +903,16 @@ class MainWindow(QMainWindow):
                     QMessageBox.information(self, "Success", "Image saved successfully!")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save image:\n{str(e)}")
+    
+    def open_process_window(self):
+        """Open the process window."""
+        if self.process_window is None:
+            self.process_window = ProcessWindow(self)
+        
+        # Show the window
+        self.process_window.show()
+        self.process_window.raise_()
+        self.process_window.activateWindow()
     
     def display_image(self, pixmap):
         """Display pixmap in the image label with proper scaling."""
