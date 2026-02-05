@@ -224,6 +224,139 @@ class ImageAnalyzer:
             "severity": severity,
         }
 
+    def calculate_low_light_score(self, image: np.ndarray) -> Dict:
+        """
+        Calculate Low-Light Score using a weighted heuristic with three criteria:
+        1. Mean Saturation Low (< 40) - Colors wash out in the dark
+        2. Brenner Gradient High/Inconsistent - Detects "grainy" texture of sensor noise
+        3. Color Histogram Spread Narrow - Distinguishes "grayish" low light from "vivid" bright light
+        
+        Args:
+            image: BGR image array
+            
+        Returns:
+            Dict containing low-light analysis results
+        """
+        if len(image.shape) == 3:
+            # Convert BGR to HSV for saturation analysis
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            # Grayscale image - create mock HSV with zero saturation
+            hsv = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
+            hsv[:, :, 2] = image  # Value channel = brightness
+            gray = image
+        
+        # Criterion 1: Mean Saturation Low (< 40)
+        mean_saturation = float(np.mean(hsv[:, :, 1]))  # S channel
+        saturation_score = 1.0 if mean_saturation < 40 else max(0.0, (80 - mean_saturation) / 40)
+        
+        # Criterion 2: Brenner Gradient for noise detection
+        # Apply Brenner gradient operator: |f(x+2,y) - f(x,y)|
+        brenner_x = np.abs(gray[2:, :].astype(float) - gray[:-2, :].astype(float))
+        brenner_y = np.abs(gray[:, 2:].astype(float) - gray[:, :-2].astype(float))
+        
+        brenner_gradient = np.mean(brenner_x) + np.mean(brenner_y)
+        brenner_std = np.std(brenner_x) + np.std(brenner_y)
+        
+        # High gradient with high variance indicates noise (sensor grain)
+        # Normalize scores to 0-1 range based on typical thresholds
+        gradient_score = min(1.0, brenner_gradient / 50.0)  # Higher gradient = more likely low-light
+        consistency_score = min(1.0, brenner_std / 30.0)    # Higher std = more inconsistent = more noise
+        brenner_score = (gradient_score + consistency_score) / 2.0
+        
+        # Criterion 3: Color Histogram Spread (narrow spread = grayish)
+        if len(image.shape) == 3:
+            # Calculate histogram spread for each color channel
+            hist_spreads = []
+            for channel in range(3):  # BGR channels
+                hist = cv2.calcHist([image], [channel], None, [256], [0, 256])
+                hist = hist.flatten()
+                
+                # Calculate weighted standard deviation of histogram
+                bin_centers = np.arange(256)
+                mean_intensity = np.average(bin_centers, weights=hist)
+                variance = np.average((bin_centers - mean_intensity) ** 2, weights=hist)
+                spread = np.sqrt(variance)
+                hist_spreads.append(spread)
+            
+            mean_hist_spread = float(np.mean(hist_spreads))
+        else:
+            # Grayscale - single histogram
+            hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
+            bin_centers = np.arange(256)
+            mean_intensity = np.average(bin_centers, weights=hist)
+            variance = np.average((bin_centers - mean_intensity) ** 2, weights=hist)
+            mean_hist_spread = float(np.sqrt(variance))
+        
+        # Narrow spread indicates grayish, washed-out colors (typical in low light)
+        # Normal spread is around 60-80, low-light images often have spread < 40
+        histogram_score = 1.0 if mean_hist_spread < 40 else max(0.0, (70 - mean_hist_spread) / 30)
+        
+        # Weighted combination of all three criteria
+        # Weights: Saturation (40%), Brenner Gradient (35%), Histogram Spread (25%)
+        low_light_score = (0.4 * saturation_score + 
+                          0.35 * brenner_score + 
+                          0.25 * histogram_score)
+        
+        # Determine if image needs low-light enhancement
+        needs_low_light_enhancement = low_light_score > 0.5
+        
+        # Determine severity
+        if low_light_score > 0.8:
+            severity = "severe"
+        elif low_light_score > 0.6:
+            severity = "moderate"
+        elif low_light_score > 0.3:
+            severity = "mild"
+        else:
+            severity = "none"
+        
+        return {
+            "low_light_score": float(low_light_score),
+            "needs_low_light_enhancement": needs_low_light_enhancement,
+            "severity": severity,
+            "criteria": {
+                "mean_saturation": mean_saturation,
+                "saturation_score": float(saturation_score),
+                "saturation_low": mean_saturation < 40,
+                "brenner_gradient": float(brenner_gradient),
+                "brenner_std": float(brenner_std),
+                "brenner_score": float(brenner_score),
+                "histogram_spread": mean_hist_spread,
+                "histogram_score": float(histogram_score),
+                "histogram_narrow": mean_hist_spread < 40,
+            },
+            "recommendations": self._get_low_light_recommendations(low_light_score, severity),
+        }
+
+    def _get_low_light_recommendations(self, score: float, severity: str) -> List[str]:
+        """Generate specific recommendations for low-light enhancement."""
+        recommendations = []
+        
+        if severity == "severe":
+            recommendations.extend([
+                "Apply aggressive low-light enhancement",
+                "Increase exposure compensation (+1.5 to +2.0 stops)",
+                "Apply noise reduction after brightening",
+                "Consider multi-frame noise reduction if available"
+            ])
+        elif severity == "moderate":
+            recommendations.extend([
+                "Apply moderate low-light enhancement",
+                "Increase exposure compensation (+1.0 to +1.5 stops)",
+                "Apply gentle noise reduction",
+                "Boost shadow details selectively"
+            ])
+        elif severity == "mild":
+            recommendations.extend([
+                "Apply light enhancement to shadows",
+                "Increase exposure compensation (+0.5 to +1.0 stops)",
+                "Consider selective area brightening"
+            ])
+        
+        return recommendations
+
     def detect_all_issues(self, image: Union[str, np.ndarray]) -> Dict:
         """
         Comprehensive analysis of image quality issues.
@@ -242,9 +375,10 @@ class ImageAnalyzer:
         lighting = self.detect_lighting(img)
         backlight = self.detect_backlight(img)
         blur = self.detect_blur(img)
+        low_light = self.calculate_low_light_score(img)
 
-        quality_score = self._calculate_overall_quality(noise, lighting, backlight, blur)
-        recommendations = self._generate_recommendations(noise, lighting, backlight, blur)
+        quality_score = self._calculate_overall_quality(noise, lighting, backlight, blur, low_light)
+        recommendations = self._generate_recommendations(noise, lighting, backlight, blur, low_light)
 
         return {
             "image_info": {
@@ -255,10 +389,11 @@ class ImageAnalyzer:
             "lighting": lighting,
             "backlight": backlight,
             "blur": blur,
+            "low_light": low_light,
             "overall_quality_score": quality_score,
             "needs_correction": quality_score < 0.7,
             "recommendations": recommendations,
-            "priority_issues": self._get_priority_issues(noise, lighting, backlight, blur),
+            "priority_issues": self._get_priority_issues(noise, lighting, backlight, blur, low_light),
         }
 
     def _assess_lighting_severity(self, brightness: float, contrast: float) -> str:
@@ -291,7 +426,7 @@ class ImageAnalyzer:
             confidence += 0.3
         return float(min(1.0, confidence))
 
-    def _calculate_overall_quality(self, noise: Dict, lighting: Dict, backlight: Dict, blur: Dict) -> float:
+    def _calculate_overall_quality(self, noise: Dict, lighting: Dict, backlight: Dict, blur: Dict, low_light: Dict = None) -> float:
         score = 1.0
         if noise.get("is_noisy"):
             level = noise.get("noise_level")
@@ -321,9 +456,18 @@ class ImageAnalyzer:
                 score -= 0.25
             else:
                 score -= 0.1
+        # Add low-light score consideration
+        if low_light and low_light.get("needs_low_light_enhancement"):
+            ll_severity = low_light.get("severity")
+            if ll_severity == "severe":
+                score -= 0.35
+            elif ll_severity == "moderate":
+                score -= 0.25
+            elif ll_severity == "mild":
+                score -= 0.15
         return float(max(0.0, score))
 
-    def _generate_recommendations(self, noise: Dict, lighting: Dict, backlight: Dict, blur: Dict) -> List[str]:
+    def _generate_recommendations(self, noise: Dict, lighting: Dict, backlight: Dict, blur: Dict, low_light: Dict = None) -> List[str]:
         recs: List[str] = []
         if blur.get("is_blurry"):
             recs.append(f"Apply sharpening filter ({blur.get('severity')} blur detected)")
@@ -335,9 +479,12 @@ class ImageAnalyzer:
             recs.append("Apply contrast enhancement (CLAHE)")
         if noise.get("is_noisy"):
             recs.append(f"Apply noise reduction ({noise.get('noise_level')} noise)")
+        # Add specific low-light recommendations
+        if low_light and low_light.get("needs_low_light_enhancement"):
+            recs.extend(low_light.get("recommendations", []))
         return recs
 
-    def _get_priority_issues(self, noise: Dict, lighting: Dict, backlight: Dict, blur: Dict) -> List[str]:
+    def _get_priority_issues(self, noise: Dict, lighting: Dict, backlight: Dict, blur: Dict, low_light: Dict = None) -> List[str]:
         issues: List[str] = []
         if blur.get("severity") == "severe":
             issues.append("severe_blur")
@@ -345,10 +492,15 @@ class ImageAnalyzer:
             issues.append("severe_backlight")
         if lighting.get("mean_brightness", 0.0) < 40:
             issues.append("very_low_light")
+        # Add low-light priority issues based on new scoring
+        if low_light and low_light.get("severity") == "severe":
+            issues.append("severe_low_light_conditions")
         if blur.get("severity") == "moderate":
             issues.append("moderate_blur")
         if backlight.get("severity") == "moderate":
             issues.append("moderate_backlight")
+        if low_light and low_light.get("severity") == "moderate":
+            issues.append("moderate_low_light_conditions")
         if lighting.get("is_low_light"):
             issues.append("low_light")
         if lighting.get("is_low_contrast"):
@@ -359,6 +511,8 @@ class ImageAnalyzer:
             issues.append("mild_backlight")
         if blur.get("severity") == "mild":
             issues.append("mild_blur")
+        if low_light and low_light.get("severity") == "mild":
+            issues.append("mild_low_light_conditions")
         return issues
 
 
@@ -676,10 +830,10 @@ class ImageProcessor:
             cv_image = self.qpixmap_to_cv2(pixmap)
             
             if filter_type == 'sharpen':
-                kernel = np.array([[-1,-1,-1],
-                                 [-1, 9,-1],
-                                 [-1,-1,-1]])
-                cv_image = cv2.filter2D(cv_image, -1, kernel)
+                # Mild unsharp mask to avoid overly harsh sharpening halos
+                blurred = cv2.GaussianBlur(cv_image, (0, 0), sigmaX=1.0, sigmaY=1.0)
+                amount = 0.45
+                cv_image = cv2.addWeighted(cv_image, 1.0 + amount, blurred, -amount, 0)
             elif filter_type == 'edge':
                 gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
                 edges = cv2.Canny(gray, 100, 200)
@@ -699,6 +853,154 @@ class ImageProcessor:
             print(f"Error applying {filter_type} filter: {e}")
             return pixmap  # Return original image on error
     
+    def apply_low_light_enhancement_liveness_safe(self, pixmap, clip_limit=2.0, color_boost=1.2, apply_denoising=None):
+        """
+        Apply "Liveness-Safe" low-light enhancement workflow to avoid face recognition spoof detection.
+        
+        This workflow follows a specific order:
+        1. Color Space Conversion: BGR → LAB
+        2. L-Channel Enhancement: Apply CLAHE with low clipLimit to avoid "halos"
+        3. Color Restoration: Apply mild multiplier to A and B channels
+        4. Denoising: Apply fastNlMeansDenoising last, only if grain is severe
+        
+        Args:
+            pixmap (QPixmap): Original image pixmap
+            clip_limit (float): CLAHE clip limit (1.5-2.0 recommended for liveness-safe enhancement)
+            color_boost (float): Multiplier for A and B channels (1.1-1.3 recommended)
+            apply_denoising (bool): If None, auto-detect based on noise level; if True/False, force enable/disable
+            
+        Returns:
+            QPixmap: Enhanced image pixmap with liveness-safe processing
+        """
+        try:
+            # Convert QPixmap to OpenCV image (BGR)
+            cv_image = self.qpixmap_to_cv2(pixmap)
+            
+            # Step 1: Color Space Conversion (BGR → LAB)
+            lab_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2LAB)
+            
+            # Step 2: L-Channel Enhancement with CLAHE
+            # Use low clipLimit to avoid "halos" around faces
+            clip_limit = max(1.0, min(3.0, clip_limit))  # Clamp to safe range
+            clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+            
+            # Split LAB channels
+            l_channel, a_channel, b_channel = cv2.split(lab_image)
+            
+            # Apply CLAHE only to L channel (lightness)
+            l_enhanced = clahe.apply(l_channel)
+            
+            # Step 3: Color Restoration - Apply mild multiplier to A and B channels
+            # This restores color saturation that might be lost in low-light conditions
+            color_boost = max(1.0, min(2.0, color_boost))  # Clamp to safe range
+            
+            # Convert A and B channels to float for safe multiplication
+            # OpenCV LAB uses 0-255 range where 128 is neutral for A and B channels
+            a_float = a_channel.astype(np.float32)
+            b_float = b_channel.astype(np.float32)
+            
+            # Apply color boost relative to neutral point (128)
+            a_enhanced = ((a_float - 128.0) * color_boost + 128.0)
+            b_enhanced = ((b_float - 128.0) * color_boost + 128.0)
+            
+            # Clamp values to valid OpenCV LAB ranges and convert back to uint8
+            a_enhanced = np.clip(a_enhanced, 0, 255).astype(np.uint8)
+            b_enhanced = np.clip(b_enhanced, 0, 255).astype(np.uint8)
+            
+            # Merge the enhanced channels back
+            lab_enhanced = cv2.merge([l_enhanced, a_enhanced, b_enhanced])
+            
+            # Convert back to BGR
+            enhanced_image = cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+            
+            # Step 4: Denoising (only if needed)
+            if apply_denoising is None:
+                # Auto-detect if denoising is needed
+                # Check noise level using Laplacian variance
+                gray = cv2.cvtColor(enhanced_image, cv2.COLOR_BGR2GRAY)
+                laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+                
+                # Apply denoising if noise is significant but not too aggressive
+                # Higher threshold than normal to avoid over-processing for face recognition
+                apply_denoising = laplacian_var < 150  # More conservative threshold
+            
+            if apply_denoising:
+                # Apply gentle denoising to avoid artifacts that could trigger spoof detection
+                enhanced_image = cv2.fastNlMeansDenoisingColored(
+                    enhanced_image, 
+                    None, 
+                    h=6,           # Lower than default (10) - less aggressive
+                    hColor=6,      # Lower than default (10) - preserve color
+                    templateWindowSize=7, 
+                    searchWindowSize=21
+                )
+            
+            # Convert back to QPixmap
+            return self.cv2_to_qpixmap(enhanced_image)
+            
+        except Exception as e:
+            print(f"Error applying liveness-safe low-light enhancement: {e}")
+            return pixmap  # Return original on error
+    
+    def enhance_low_light_auto(self, pixmap):
+        """
+        Automatically enhance low-light images using the liveness-safe workflow.
+        
+        This method analyzes the image first and applies appropriate enhancement
+        based on the detected low-light conditions.
+        
+        Args:
+            pixmap (QPixmap): Original image pixmap
+            
+        Returns:
+            QPixmap: Enhanced image pixmap
+        """
+        try:
+            # First, analyze the image to determine enhancement parameters
+            analysis = self.analyze_image(pixmap)
+            
+            if not analysis or not analysis.get('low_light'):
+                # No low-light analysis available, apply conservative enhancement
+                return self.apply_low_light_enhancement_liveness_safe(pixmap, clip_limit=1.5, color_boost=1.1)
+            
+            low_light_info = analysis['low_light']
+            severity = low_light_info.get('severity', 'none')
+            low_light_score = low_light_info.get('low_light_score', 0.0)
+            
+            if severity == 'none' and low_light_score < 0.3:
+                # Image doesn't need enhancement
+                return pixmap
+            
+            # Determine enhancement parameters based on severity
+            if severity == 'severe' or low_light_score > 0.8:
+                clip_limit = 2.5
+                color_boost = 1.3
+                force_denoising = True
+            elif severity == 'moderate' or low_light_score > 0.6:
+                clip_limit = 2.0
+                color_boost = 1.2
+                force_denoising = None  # Auto-detect
+            elif severity == 'mild' or low_light_score > 0.3:
+                clip_limit = 1.5
+                color_boost = 1.1
+                force_denoising = False
+            else:
+                # Very mild enhancement
+                clip_limit = 1.2
+                color_boost = 1.05
+                force_denoising = False
+            
+            return self.apply_low_light_enhancement_liveness_safe(
+                pixmap, 
+                clip_limit=clip_limit, 
+                color_boost=color_boost, 
+                apply_denoising=force_denoising
+            )
+            
+        except Exception as e:
+            print(f"Error in auto low-light enhancement: {e}")
+            return pixmap
+
     def apply_histogram_equalization(self, pixmap):
         """Apply histogram equalization for better contrast."""
         try:

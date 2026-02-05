@@ -469,6 +469,7 @@ class FaceRecognitionAPI:
             antispoof_score = largest_face.get('antispoof_score', 1.0)
             confidence = largest_face.get('confidence', 0.0)
             face_id = largest_face.get('face_id', 'unknown')
+            antispoof_details = largest_face.get('antispoof_details', {})
                 
             # Analyze quality using a temporary file
             with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
@@ -496,7 +497,8 @@ class FaceRecognitionAPI:
                 'antispoof_score': antispoof_score,
                 'face_confidence': confidence,
                 'face_id': face_id,
-                'anti_spoofing_status': 'REAL' if is_real else 'SPOOF'
+                'anti_spoofing_status': 'REAL' if is_real else 'SPOOF',
+                'antispoof_details': antispoof_details
             })
             
             print(f"✅ Extracted largest face: {face_image.shape[1]}x{face_image.shape[0]} pixels")

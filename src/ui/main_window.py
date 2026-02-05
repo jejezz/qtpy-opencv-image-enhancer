@@ -270,12 +270,33 @@ class MainWindow(QMainWindow):
         self.edge_btn = QPushButton("Edge Detection")
         self.emboss_btn = QPushButton("Emboss")
         self.histogram_btn = QPushButton("Auto Contrast (Histogram)")
+        self.low_light_btn = QPushButton("🌙 Low-Light Enhancement")
+        self.low_light_btn.setMinimumHeight(40)
+        self.low_light_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9C27B0;
+                color: white;
+                border: none;
+                padding: 12px;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #7B1FA2;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
         
         # Disable filter buttons initially
         self.sharpen_btn.setEnabled(False)
         self.edge_btn.setEnabled(False)
         self.emboss_btn.setEnabled(False)
         self.histogram_btn.setEnabled(False)
+        self.low_light_btn.setEnabled(False)
         
         filters_layout.addWidget(blur_group)
         filters_layout.addWidget(bilateral_group)
@@ -284,6 +305,10 @@ class MainWindow(QMainWindow):
         filters_layout.addWidget(self.edge_btn)
         filters_layout.addWidget(self.emboss_btn)
         filters_layout.addWidget(self.histogram_btn)
+        
+        # Add some spacing before the low-light button to make it more prominent
+        filters_layout.addSpacing(10)
+        filters_layout.addWidget(self.low_light_btn)
         
         # Reset button
         self.reset_btn = QPushButton("Reset All")
@@ -355,7 +380,7 @@ class MainWindow(QMainWindow):
         """Create transparent overlay for image analysis display."""
         # Analysis overlay frame
         self.analysis_overlay = QFrame(self.image_container)
-        self.analysis_overlay.setFixedSize(320, 300)
+        self.analysis_overlay.setFixedSize(380, 400)  # Increased size for low-light details
         self.analysis_overlay.setStyleSheet("""
             QFrame {
                 background-color: rgba(0, 0, 0, 180);
@@ -577,6 +602,38 @@ class MainWindow(QMainWindow):
         text_parts.append(f"💡 Brightness: {brightness:.1f}")
         text_parts.append(f"🔳 Contrast: {contrast:.1f}")
         
+        # Low-Light Analysis Section
+        low_light = analysis.get('low_light', {})
+        if low_light:
+            ll_score = low_light.get('low_light_score', 0.0)
+            ll_severity = low_light.get('severity', 'none')
+            needs_enhancement = low_light.get('needs_low_light_enhancement', False)
+            
+            text_parts.append(f"\n🌙 Low-Light Score: {ll_score:.2f}")
+            if needs_enhancement:
+                text_parts.append(f"🔍 Severity: {ll_severity.upper()}")
+                
+            # Low-light criteria details
+            criteria = low_light.get('criteria', {})
+            if criteria:
+                text_parts.append("\n📊 Low-Light Criteria:")
+                
+                # Saturation analysis
+                mean_sat = criteria.get('mean_saturation', 0)
+                sat_low = criteria.get('saturation_low', False)
+                text_parts.append(f"  🎨 Saturation: {mean_sat:.1f} {'❌' if sat_low else '✅'}")
+                
+                # Brenner gradient (noise analysis)
+                brenner_grad = criteria.get('brenner_gradient', 0)
+                brenner_std = criteria.get('brenner_std', 0)
+                text_parts.append(f"  📈 Noise Level: {brenner_grad:.1f}")
+                text_parts.append(f"  📊 Noise Variance: {brenner_std:.1f}")
+                
+                # Histogram spread
+                hist_spread = criteria.get('histogram_spread', 0)
+                hist_narrow = criteria.get('histogram_narrow', False)
+                text_parts.append(f"  🎯 Color Range: {hist_spread:.1f} {'❌' if hist_narrow else '✅'}")
+        
         # Issues detection
         issues = []
         if analysis.get('noise', {}).get('is_noisy'):
@@ -589,9 +646,13 @@ class MainWindow(QMainWindow):
             backlight_severity = analysis['backlight'].get('severity', 'unknown')
             issues.append(f"Backlight ({backlight_severity})")
         if analysis.get('lighting', {}).get('is_low_light'):
-            issues.append("Low light")
+            issues.append("Low light (basic)")
         if analysis.get('lighting', {}).get('is_low_contrast'):
             issues.append("Low contrast")
+        # Add advanced low-light detection
+        if low_light.get('needs_low_light_enhancement'):
+            ll_severity = low_light.get('severity', 'unknown')
+            issues.append(f"Low-light conditions ({ll_severity})")
             
         if issues:
             text_parts.append("\n⚠️ Issues:")
@@ -600,11 +661,11 @@ class MainWindow(QMainWindow):
         else:
             text_parts.append("\n✅ No major issues")
             
-        # Recommendations
+        # Recommendations (include low-light specific ones)
         recommendations = analysis.get('recommendations', [])
         if recommendations:
             text_parts.append("\n💡 Recommendations:")
-            for rec in recommendations[:3]:  # Limit to top 3
+            for rec in recommendations[:5]:  # Increased limit to show low-light recs
                 text_parts.append(f"  • {rec}")
                 
         # Technical details
@@ -614,6 +675,16 @@ class MainWindow(QMainWindow):
             laplacian = analysis['noise'].get('laplacian_variance', 0)
             text_parts.append(f"  PSNR: {psnr:.1f}dB")
             text_parts.append(f"  Sharpness: {laplacian:.1f}")
+        
+        # Low-light technical scores
+        if low_light and low_light.get('criteria'):
+            criteria = low_light['criteria']
+            sat_score = criteria.get('saturation_score', 0)
+            brenner_score = criteria.get('brenner_score', 0)
+            hist_score = criteria.get('histogram_score', 0)
+            text_parts.append(f"  LL-Sat: {sat_score:.2f}")
+            text_parts.append(f"  LL-Noise: {brenner_score:.2f}")
+            text_parts.append(f"  LL-Range: {hist_score:.2f}")
         
         self.analysis_text.setPlainText('\n'.join(text_parts))
         self.analysis_overlay.show()
@@ -648,6 +719,7 @@ class MainWindow(QMainWindow):
         self.edge_btn.clicked.connect(lambda: self.apply_filter('edge'))
         self.emboss_btn.clicked.connect(lambda: self.apply_filter('emboss'))
         self.histogram_btn.clicked.connect(self.apply_histogram_equalization)
+        self.low_light_btn.clicked.connect(self.apply_low_light_enhancement)
         
         # Connect Gaussian Blur sliders
         self.blur_kernel_slider.valueChanged.connect(self.on_blur_kernel_changed)
@@ -779,6 +851,7 @@ class MainWindow(QMainWindow):
                 self.edge_btn.setEnabled(True)
                 self.emboss_btn.setEnabled(True)
                 self.histogram_btn.setEnabled(True)
+                self.low_light_btn.setEnabled(True)
                 
                 # Enable face extraction
                 self.extract_face_btn.setEnabled(True)
@@ -851,9 +924,17 @@ class MainWindow(QMainWindow):
         """Reset all adjustment sliders to config values."""
         try:
             # Load values from config
-            self.brightness_slider.setValue(int(self.config.get('DEFAULT', 'last_brightness', fallback='0')))
-            self.contrast_slider.setValue(int(self.config.get('DEFAULT', 'last_contrast', fallback='0')))
-            self.saturation_slider.setValue(int(self.config.get('DEFAULT', 'last_saturation', fallback='0')))
+            self.brightness_slider.setValue(0)
+            self.contrast_slider.setValue(0)
+            self.saturation_slider.setValue(0)
+
+            # Reset Gaussian blur sliders to defaults
+            self.blur_kernel_slider.setValue(7)
+            self.blur_sigmax_slider.setValue(0)
+            self.blur_sigmay_slider.setValue(0)
+            self.blur_kernel_label.setText("15")
+            self.blur_sigmax_label.setText("Auto")
+            self.blur_sigmay_label.setText("Auto")
             
             # Reset filter sliders to config values
             self.bilateral_d_slider.setValue(int(self.config.get('DEFAULT', 'last_bilateral_d', fallback='9')))
@@ -1410,6 +1491,41 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to apply histogram equalization:\n{str(e)}")
     
+    def apply_low_light_enhancement(self):
+        """Apply liveness-safe low-light enhancement to the current image."""
+        if not self.current_working_pixmap:
+            return
+        
+        try:
+            # Apply low-light enhancement to current working image
+            enhanced_pixmap = self.image_processor.enhance_low_light_auto(self.current_working_pixmap)
+            
+            # Update the current working image
+            self.current_working_pixmap = enhanced_pixmap
+            
+            # Also apply low-light enhancement to extracted face if it exists
+            if self.original_extracted_face_pixmap:
+                face_enhanced_pixmap = self.image_processor.enhance_low_light_auto(
+                    self.original_extracted_face_pixmap
+                )
+                # Update the original extracted face to the enhanced version
+                self.original_extracted_face_pixmap = face_enhanced_pixmap
+                self.extracted_face_pixmap = face_enhanced_pixmap
+                # Update face display
+                self.display_face_image(self.extracted_face_pixmap)
+            
+            # Reset enhancement sliders since enhancement creates new base
+            self.brightness_slider.setValue(0)
+            self.contrast_slider.setValue(0)
+            self.saturation_slider.setValue(0)
+            
+            self.display_image(enhanced_pixmap)
+            
+            self.status_bar.showMessage("Applied liveness-safe low-light enhancement")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to apply low-light enhancement:\n{str(e)}")
+
     def analyze_current_image(self):
         """Analyze the currently displayed image and update the display."""
         if not self.current_working_pixmap:
@@ -1485,7 +1601,7 @@ class MainWindow(QMainWindow):
                 current_pixmap.save(temp_path, 'JPEG', quality=95)
             
             # Extract faces from the temporary enhanced image
-            faces_data = self.face_api.extract_faces_from_server(temp_path)
+            faces_data = self.face_api.extract_faces_from_server(temp_path, liveness_check=True)
             
             # Clean up temporary file
             import os
@@ -1599,6 +1715,8 @@ class MainWindow(QMainWindow):
             status_icon = "✅" if is_real else "❌"
             text_parts.append(f"{status_icon} Anti-Spoofing: {anti_spoofing_status}")
             text_parts.append(f"Spoof Score: {antispoof_score:.3f}")
+            antispoof_details = quality_info.get('antispoof_details', {})
+            text_parts.append(f"Spoof Details: {antispoof_details}")  # Blank line for separation
             
             # Face detection confidence if available
             if 'face_confidence' in quality_info:
@@ -1784,6 +1902,7 @@ class MainWindow(QMainWindow):
             self.edge_btn.setEnabled(True)
             self.emboss_btn.setEnabled(True)
             self.histogram_btn.setEnabled(True)
+            self.low_light_btn.setEnabled(True)
             
             # Enable face extraction
             self.extract_face_btn.setEnabled(True)
