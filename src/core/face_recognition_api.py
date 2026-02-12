@@ -292,6 +292,12 @@ class FaceRecognitionAPI:
         """
         print(f"🔍 Step 1: Extracting faces from {image_path}")
         
+        # Get the original image size for diagnostic comparison
+        original_img = cv2.imread(image_path)
+        if original_img is not None:
+            orig_height, orig_width = original_img.shape[0], original_img.shape[1]
+            print(f"   📷 Original image size: {orig_width}x{orig_height} pixels")
+        
         try:
             with open(image_path, 'rb') as f:
                 files = {'image': f}
@@ -307,11 +313,42 @@ class FaceRecognitionAPI:
             
             if response.status_code == 200:
                 result = response.json()
-                print(f"   📊 Debug - API response keys: {list(result.keys())}")
+                print(f"   📊 API response keys: {list(result.keys())}")
                 
                 if result.get('success'):
                     faces = result.get('faces', [])
-                    print(f"   ✅ Successfully extracted {len(faces)} faces")
+                    print(f"   ✅ Successfully extracted {len(faces)} faces from server\n")
+                    
+                    # DIAGNOSTIC: Log detailed information about each face received
+                    for idx, face in enumerate(faces):
+                        face_id = face.get('face_id', f'face_{idx}')
+                        is_real = face.get('is_real', True)
+                        antispoof_score = face.get('antispoof_score', 0.0)
+                        confidence = face.get('confidence', 0.0)
+                        status = "REAL ✅" if is_real else "SPOOF ❌"
+                        
+                        if 'face_image' in face:
+                            base64_data = face['face_image']
+                            if ',' in base64_data:
+                                encoding_type = base64_data.split(',')[0]
+                                base64_data = base64_data.split(',')[1]
+                            else:
+                                encoding_type = "raw"
+                            
+                            base64_size = len(base64_data)
+                            print(f"   📦 Face {idx} ({face_id}): {status}")
+                            print(f"      Confidence: {confidence:.3f}, Anti-spoof: {antispoof_score:.3f}")
+                            print(f"      Base64 size: {base64_size:,} bytes, Encoding: {encoding_type}")
+                            
+                            # Compare with original if available
+                            if original_img is not None:
+                                if base64_size > 100000:  # Rough estimate - full image usually > 100KB
+                                    print(f"      ⚠️  WARNING: Base64 size is very large (likely FULL IMAGE, not cropped face)")
+                                else:
+                                    print(f"      ✅ Base64 size seems reasonable for a cropped face")
+                        else:
+                            print(f"   📦 Face {idx}: ❌ NO face_image data in response!")
+                    print()
                     return faces
                 else:
                     print(f"   ❌ API returned error: {result.get('message', 'Unknown error')}")
@@ -418,11 +455,17 @@ class FaceRecognitionAPI:
             return None, None
             
         try:
+            # DIAGNOSTIC: Create debug directory for base64 analysis
+            debug_dir = "face_diagnostic_debug"
+            os.makedirs(debug_dir, exist_ok=True)
+            
             # Find the face with the largest area (assuming it's the most prominent)
             largest_face = None
             largest_area = 0
             
-            for face in faces_data:
+            print(f"\n🔍 DIAGNOSTIC: Analyzing {len(faces_data)} faces from server response")
+            
+            for idx, face in enumerate(faces_data):
                 if 'face_image' not in face:
                     continue
                     
@@ -432,24 +475,57 @@ class FaceRecognitionAPI:
                     if ',' in base64_data:
                         base64_data = base64_data.split(',')[1]
                     
+                    # DIAGNOSTIC: Log base64 data size
+                    is_real = face.get('is_real', True)
+                    antispoof_score = face.get('antispoof_score', 1.0)
+                    status = "REAL" if is_real else "SPOOF"
+                    base64_size = len(base64_data)
+                    print(f"   Face {idx}: {status} (score: {antispoof_score:.3f}), base64_size: {base64_size} bytes")
+                    
                     image_bytes = base64.b64decode(base64_data)
                     # Create temporary array to check dimensions
                     nparr = np.frombuffer(image_bytes, np.uint8)
                     temp_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                     
                     if temp_img is not None:
-                        area = temp_img.shape[0] * temp_img.shape[1]
+                        height, width = temp_img.shape[0], temp_img.shape[1]
+                        area = height * width
+                        print(f"      Decoded image: {width}x{height} pixels, area: {area}")
+                        
+                        # DIAGNOSTIC: Save base64 analysis file
+                        diag_file = os.path.join(debug_dir, f"face_{idx}_{status}_base64_analysis.txt")
+                        with open(diag_file, 'w') as f:
+                            f.write(f"Face {idx} Analysis\n")
+                            f.write(f"================\n")
+                            f.write(f"Status: {status}\n")
+                            f.write(f"Anti-spoof Score: {antispoof_score}\n")
+                            f.write(f"Base64 Data Size: {base64_size} bytes\n")
+                            f.write(f"Decoded Image Size: {width}x{height} pixels\n")
+                            f.write(f"Decoded Bytes: {len(image_bytes)} bytes\n")
+                            f.write(f"First 100 chars of base64: {base64_data[:100]}...\n")
+                        print(f"      💾 Saved diagnostic file: {diag_file}")
+                        
+                        # DIAGNOSTIC: Save decoded image for visual inspection
+                        diag_image = os.path.join(debug_dir, f"face_{idx}_{status}_decoded_{width}x{height}.jpg")
+                        cv2.imwrite(diag_image, temp_img)
+                        print(f"      💾 Saved decoded image: {diag_image}")
+                        
                         if area > largest_area:
                             largest_area = area
                             largest_face = face
                             
                 except Exception as e:
-                    print(f"Error checking face size: {e}")
+                    print(f"   Face {idx}: Error checking face size: {e}")
                     continue
             
             if not largest_face:
                 print("No valid faces found")
                 return None, None
+            
+            # DIAGNOSTIC: Report which face was selected
+            largest_is_real = largest_face.get('is_real', True)
+            largest_status = "REAL" if largest_is_real else "SPOOF"
+            print(f"\n✅ Selected largest face ({largest_status})")
                 
             # Decode the largest face
             base64_data = largest_face['face_image']
@@ -582,6 +658,104 @@ class FaceRecognitionAPI:
                 'error': str(e)
             }
 
+    def analyze_anti_spoofing(self, image_path: str, description: str = "") -> Dict[str, Any]:
+        """
+        Analyze anti-spoofing detection on an image
+        
+        Args:
+            image_path: Path to the image file
+            description: Optional description for logging
+            
+        Returns:
+            Dictionary with anti-spoofing analysis results including:
+            - success: Boolean indicating if analysis was successful
+            - error: Error message if success=False
+            - deepface_results: Results from DeepFace-based detection
+            - composite_anti_spoofing: Results from composite anti-spoofing model (if available)
+            - image_info: Image metadata (width, height, format)
+        """
+        print(f"🔍 Anti-spoofing analysis{' - ' + description if description else ''}")
+        print(f"   Image: {image_path}")
+        
+        try:
+            with open(image_path, 'rb') as f:
+                files = {'image': f}
+                response = requests.post(
+                    f"{self.api_base}/analyze_anti_spoofing",
+                    files=files,
+                    cert=self.cert,
+                    verify=self.verify_ssl
+                )
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                # Check if the analysis was successful
+                if result.get('success'):
+                    print(f"   ✅ Anti-spoofing analysis completed")
+                    
+                    # Log DeepFace results
+                    if 'deepface_results' in result:
+                        df_results = result['deepface_results']
+                        print(f"   📊 DeepFace Results:")
+                        print(f"      Faces detected: {df_results.get('faces_detected', 0)}")
+                        if df_results.get('max_face'):
+                            max_face = df_results['max_face']
+                            print(f"      Confidence: {max_face.get('confidence', 0):.3f}")
+                            if max_face.get('facial_area'):
+                                area = max_face['facial_area']
+                                print(f"      Facial area: x={area.get('x', 0)}, y={area.get('y', 0)}, w={area.get('w', 0)}, h={area.get('h', 0)}")
+                    
+                    # Log composite anti-spoofing results
+                    if 'composite_anti_spoofing' in result and result['composite_anti_spoofing']:
+                        cas_results = result['composite_anti_spoofing']
+                        print(f"   📊 Composite Anti-Spoofing Results:")
+                        try:
+                            photo_score = float(cas_results.get('photo_score', 0))
+                            real_score = float(cas_results.get('real_score', 0))
+                            video_score = float(cas_results.get('video_score', 0))
+                            confidence = float(cas_results.get('confidence', 0))
+                            
+                            print(f"      Photo score: {photo_score:.3f}")
+                            print(f"      Real score: {real_score:.3f}")
+                            print(f"      Video score: {video_score:.3f}")
+                            print(f"      Is real: {cas_results.get('is_real', False)}")
+                            print(f"      Confidence: {confidence:.3f}")
+                        except (ValueError, TypeError) as e:
+                            print(f"      ⚠️ Error formatting scores: {e}")
+                            print(f"      Raw data: {cas_results}")
+                    
+                    # Log image info
+                    if 'image_info' in result:
+                        img_info = result['image_info']
+                        print(f"   📷 Image: {img_info.get('width', 0)}x{img_info.get('height', 0)} {img_info.get('format', 'unknown')}")
+                    
+                    return result
+                else:
+                    # Analysis failed on server side
+                    error_msg = result.get('error', 'Unknown error')
+                    print(f"   ❌ Analysis failed: {error_msg}")
+                    return {
+                        'success': False,
+                        'error': error_msg
+                    }
+            else:
+                # HTTP error
+                print(f"   ❌ Server error: {response.status_code}")
+                print(f"   Response: {response.text}")
+                return {
+                    'success': False,
+                    'error': f'HTTP {response.status_code}',
+                    'response_text': response.text
+                }
+                
+        except Exception as e:
+            print(f"   ❌ Error calling analyze_anti_spoofing API: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
 # Convenience functions for backward compatibility
 def create_api_client(server_url: str = "https://callfusion.ptype.co.kr:55000",
                      certs_dir: str = "./certs") -> FaceRecognitionAPI:
@@ -602,3 +776,11 @@ def face_recognition(image_path: str,
     """Convenience function to face recognition (creates temporary client)"""
     client = FaceRecognitionAPI(server_url, certs_dir)
     return client.face_recognition(image_path, description)
+
+def analyze_anti_spoofing(image_path: str, 
+                         description: str = "",
+                         server_url: str = "https://callfusion.ptype.co.kr:55000",
+                         certs_dir: str = "./certs") -> Dict[str, Any]:
+    """Convenience function to analyze anti-spoofing (creates temporary client)"""
+    client = FaceRecognitionAPI(server_url, certs_dir)
+    return client.analyze_anti_spoofing(image_path, description)

@@ -7,13 +7,14 @@ from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QFileDialog, QMessageBox,
     QSlider, QGroupBox, QGridLayout, QStatusBar,
-    QFrame, QScrollArea, QTextEdit
+    QFrame, QScrollArea, QTextEdit, QDialog
 )
 from qtpy.QtCore import Qt, Signal, QSettings, QUrl
 from qtpy.QtGui import QPixmap, QIcon, QPalette, QColor, QImage, QDragEnterEvent, QDropEvent
 from src.core.image_processor import ImageProcessor
 from src.core.face_recognition_api import FaceRecognitionAPI
 from src.ui.process_window import ProcessWindow
+from src.ui.anti_spoof_dialog import AntiSpoofingResultDialog
 import cv2
 import numpy as np
 import tempfile
@@ -358,6 +359,29 @@ class MainWindow(QMainWindow):
         """)
         image_layout.addWidget(self.analyze_btn)
         
+        # Add Analyze Anti-Spoof Score button
+        self.analyze_antispoof_btn = QPushButton("Analyze Anti-Spoof Score")
+        self.analyze_antispoof_btn.setEnabled(False)
+        self.analyze_antispoof_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9C27B0;
+                color: white;
+                border: none;
+                padding: 8px;
+                border-radius: 4px;
+                font-weight: bold;
+                margin-bottom: 10px;
+            }
+            QPushButton:hover {
+                background-color: #7B1FA2;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        image_layout.addWidget(self.analyze_antispoof_btn)
+        
         # Create a container for the image and overlay
         self.image_container = QWidget()
         self.image_container.setMinimumSize(600, 500)
@@ -677,6 +701,10 @@ class MainWindow(QMainWindow):
                 
         # Technical details
         text_parts.append("\n🔧 Technical:")
+        if 'blur' in analysis:
+            blur_laplacian = analysis['blur'].get('laplacian_variance', 0)
+            text_parts.append(f"  Blur Laplacian: {blur_laplacian:.2f}")
+            
         if 'noise' in analysis:
             psnr = analysis['noise'].get('psnr', 0)
             laplacian = analysis['noise'].get('laplacian_variance', 0)
@@ -750,8 +778,9 @@ class MainWindow(QMainWindow):
         self.recognize_face_btn.clicked.connect(self.recognize_face)
         self.save_face_btn.clicked.connect(self.save_face)
         
-        # Connect analyze button
+        # Connect analyze buttons
         self.analyze_btn.clicked.connect(self.analyze_current_image)
+        self.analyze_antispoof_btn.clicked.connect(self.analyze_anti_spoof_score)
     
     def init_config(self):
         """Initialize configuration file."""
@@ -864,8 +893,9 @@ class MainWindow(QMainWindow):
                 # Enable face extraction
                 self.extract_face_btn.setEnabled(True)
                 
-                # Enable analyze button
+                # Enable analyze buttons
                 self.analyze_btn.setEnabled(True)
+                self.analyze_antispoof_btn.setEnabled(True)
                 
                 # Reset sliders to config values
                 self.reset_adjustments()
@@ -1071,7 +1101,12 @@ class MainWindow(QMainWindow):
                 height, width, channel = face_image.shape
                 bytes_per_line = 3 * width
                 rgb_image = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
-                q_image = QImage(rgb_image.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
+                
+                # Create a copy of the data to ensure it persists
+                rgb_image_copy = rgb_image.copy()
+                q_image = QImage(rgb_image_copy.data, width, height, bytes_per_line, QImage.Format.Format_RGB888)
+                # Convert to ensure data is copied into QImage
+                q_image = q_image.copy()
                 
                 # Store original extracted face (without enhancements)
                 self.original_extracted_face_pixmap = QPixmap.fromImage(q_image)
@@ -1095,7 +1130,8 @@ class MainWindow(QMainWindow):
                 # Show quality info in status
                 if quality_info:
                     quality_score = quality_info.get('quality_score', 'Unknown')
-                    self.status_bar.showMessage(f"Face extracted successfully - Quality: {quality_score}")
+                    antispoof_status = quality_info.get('anti_spoofing_status', 'UNKNOWN')
+                    self.status_bar.showMessage(f"Face extracted - Quality: {quality_score}, Anti-spoof: {antispoof_status}")
                 else:
                     self.status_bar.showMessage("Face extracted successfully")
                     
@@ -1590,6 +1626,32 @@ class MainWindow(QMainWindow):
             print(f"Error analyzing image: {e}")
             self.status_bar.showMessage("Analysis failed")
     
+    def analyze_anti_spoof_score(self):
+        """Analyze the current image for anti-spoofing scores."""
+        if not self.current_image_path:
+            QMessageBox.warning(self, "No Image", "Please load an image first.")
+            return
+        
+        try:
+            self.status_bar.showMessage("Analyzing anti-spoofing scores...")
+            
+            # Call the anti-spoofing analysis API
+            result = self.face_api.analyze_anti_spoofing(self.current_image_path, description="Using UI")
+            
+            # Display the result in a dialog
+            if result:
+                dialog = AntiSpoofingResultDialog(result, self, x=self.x()+100, y=self.y()+100)
+                dialog.exec()
+                self.status_bar.showMessage("Anti-spoofing analysis complete")
+            else:
+                QMessageBox.warning(self, "Analysis Failed", "Could not analyze the image for anti-spoofing.")
+                self.status_bar.showMessage("Anti-spoofing analysis failed")
+                
+        except Exception as e:
+            print(f"Error in anti-spoofing analysis: {e}")
+            QMessageBox.critical(self, "Error", f"Error during anti-spoofing analysis:\n{str(e)}")
+            self.status_bar.showMessage("Anti-spoofing analysis error")
+
     def resizeEvent(self, event):
         """Handle window resize to update image display."""
         super().resizeEvent(event)
@@ -1925,8 +1987,9 @@ class MainWindow(QMainWindow):
             # Enable face extraction
             self.extract_face_btn.setEnabled(True)
             
-            # Enable analyze button
+            # Enable analyze buttons
             self.analyze_btn.setEnabled(True)
+            self.analyze_antispoof_btn.setEnabled(True)
             
             # Reset sliders to config values
             self.reset_adjustments()
